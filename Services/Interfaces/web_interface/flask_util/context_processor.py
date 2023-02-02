@@ -20,6 +20,7 @@ import octobot.constants as constants
 import octobot.enums as enums
 import octobot.community.identifiers_provider as identifiers_provider
 import tentacles.Services.Interfaces.web_interface.models as models
+import tentacles.Services.Interfaces.web_interface.models.configuration as configuration_model
 import tentacles.Services.Interfaces.web_interface.enums as web_enums
 import tentacles.Services.Interfaces.web_interface as web_interface
 import tentacles.Services.Interfaces.web_interface.login as web_interface_login
@@ -40,20 +41,37 @@ def context_processor_register():
         return ', '.join(f'{exchange.capitalize()}: {holding[holding_type]}'
                          for exchange, holding in holdings['exchanges'].items())
 
+    def _get_details_from_full_symbol_list(full_symbol_list, currency_name):
+        for symbol_details in full_symbol_list:
+            if symbol_details[configuration_model.SHORT_NAME_KEY].lower() == currency_name:
+                return symbol_details
+        raise KeyError(currency_name)
+
+    def get_currency_id(full_symbol_list, currency_name):
+        currency_key = currency_name.lower()
+        try:
+            return _get_details_from_full_symbol_list(full_symbol_list, currency_key)[configuration_model.ID_KEY]
+        except KeyError:
+            return currency_key
+
     def filter_currency_pairs(currency, symbol_list, full_symbol_list, config_symbols):
-        currency_key = currency
-        symbol = full_symbol_list.get(currency_key, None)
-        if symbol is None:
-            # try on uppercase
-            currency_key = currency.upper()
-            symbol = full_symbol_list.get(currency_key, None)
-        if symbol is None:
+        currency_key = currency.lower()
+        try:
+            symbol = _get_details_from_full_symbol_list(full_symbol_list, currency_key)[configuration_model.SYMBOL_KEY]
+        except KeyError:
             return symbol_list
-        filtered_symbol = [s for s in symbol_list
-                           if full_symbol_list[currency_key][models.SYMBOL_KEY]
-                           in symbol_util.parse_symbol(s).base_and_quote()]
-        return (filtered_symbol + [s for s in config_symbols[currency]["pairs"]
-                                                    if s in symbol_list and s not in filtered_symbol])
+        filtered_symbol = [
+            s
+            for s in symbol_list
+            if symbol in symbol_util.parse_symbol(s).base_and_quote()
+        ]
+        return (
+            filtered_symbol + [
+                s
+                for s in config_symbols[currency]["pairs"]
+                if s in symbol_list and s not in filtered_symbol
+            ]
+        )
 
     def get_profile_traded_pairs_by_currency(profile):
         return {
@@ -114,10 +132,14 @@ def context_processor_register():
         OCTOBOT_DONATION_URL=constants.OCTOBOT_DONATION_URL,
         CURRENT_BOT_VERSION=interfaces.AbstractInterface.project_version,
         IS_DEMO=constants.IS_DEMO,
+        IS_CLOUD=constants.IS_CLOUD_ENV,
+        IS_ALLOWING_TRACKING=models.get_metrics_enabled(),
+        TRACKING_ID=constants.TRACKING_ID,
         TAB_START=web_enums.TabsLocation.START,
         TAB_END=web_enums.TabsLocation.END,
         get_tentacle_config_file_content=get_tentacle_config_file_content,
         get_tentacle_config_schema_content=get_tentacle_config_schema_content,
+        get_currency_id=get_currency_id,
         filter_currency_pairs=filter_currency_pairs,
         get_exchange_holdings=get_exchange_holdings,
         get_profile_traded_pairs_by_currency=get_profile_traded_pairs_by_currency,

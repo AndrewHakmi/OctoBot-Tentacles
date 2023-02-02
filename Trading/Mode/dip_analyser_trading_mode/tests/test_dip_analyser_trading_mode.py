@@ -32,6 +32,7 @@ import octobot_trading.exchanges as exchanges
 import octobot_trading.personal_data as trading_personal_data
 import octobot_trading.enums as trading_enums
 import octobot_trading.constants as trading_constants
+import octobot_trading.modes.script_keywords as script_keywords
 import octobot_commons.constants as commons_constants
 import tentacles.Evaluator.TA as TA
 import tentacles.Evaluator.Strategies as Strategies
@@ -111,6 +112,41 @@ async def test_create_bottom_order(tools):
     expected_quantity = market_quantity * risk_multiplier * \
         consumer.VOLUME_WEIGH_TO_VOLUME_PERCENT[volume_weight] * \
         consumer.SOFT_MAX_CURRENCY_RATIO
+    assert order.origin_quantity == expected_quantity
+
+    expected_price = price * consumer.LIMIT_PRICE_MULTIPLIER
+    assert order.origin_price == expected_price
+    portfolio = trader.exchange_manager.exchange_personal_data.portfolio_manager.portfolio
+    assert trader.exchange_manager.exchange_personal_data.portfolio_manager.portfolio.get_currency_portfolio("USDT").available  > trading_constants.ZERO
+
+    assert order.order_id in consumer.sell_targets_by_order_id
+
+
+async def test_create_bottom_order_with_configured_quantity(tools):
+    producer, consumer, trader = tools
+
+    producer.trading_mode.trading_config[trading_constants.CONFIG_BUY_ORDER_AMOUNT] = \
+        f"20{script_keywords.QuantityType.PERCENT.value}"
+    price = decimal.Decimal("1000")
+    market_quantity = decimal.Decimal("2")
+    volume_weight = decimal.Decimal("1")
+    risk_multiplier = decimal.Decimal("1.1")
+    # force portfolio value
+    trader.exchange_manager.exchange_personal_data. \
+        portfolio_manager.portfolio_value_holder.portfolio_current_value = decimal.Decimal(1)
+    await producer._create_bottom_order(1, volume_weight, 1)
+    # create as task to allow creator's queue to get processed
+    await asyncio.create_task(_check_open_orders_count(trader, 1))
+    await asyncio_tools.wait_asyncio_next_cycle()
+
+    order = trading_api.get_open_orders(trader.exchange_manager)[0]
+    default_expected_quantity = market_quantity * risk_multiplier * \
+        consumer.VOLUME_WEIGH_TO_VOLUME_PERCENT[volume_weight] * \
+        consumer.SOFT_MAX_CURRENCY_RATIO
+    expected_quantity = decimal.Decimal(1) * risk_multiplier * \
+        consumer.VOLUME_WEIGH_TO_VOLUME_PERCENT[volume_weight] * \
+        decimal.Decimal("0.2")
+    assert default_expected_quantity != expected_quantity
     assert order.origin_quantity == expected_quantity
 
     expected_price = price * consumer.LIMIT_PRICE_MULTIPLIER
@@ -246,13 +282,14 @@ async def test_create_bottom_order_replace_current(tools):
     assert fifth_order.order_id in consumer.sell_targets_by_order_id
 
 
-async def test_create_sell_orders(tools):
+async def test_create_sell_orders_without_stop_loss(tools):
     producer, consumer, trader = tools
 
     sell_quantity = decimal.Decimal("5")
     sell_target = 2
     buy_price = decimal.Decimal("100")
     order_id = "a"
+    consumer.STOP_LOSS_PRICE_MULTIPLIER = trading_constants.ZERO
     consumer.sell_targets_by_order_id[order_id] = sell_target
     await producer._create_sell_order_if_enabled(order_id, sell_quantity, buy_price)
     # create as task to allow creator's queue to get processed
@@ -262,6 +299,8 @@ async def test_create_sell_orders(tools):
     open_orders = trading_api.get_open_orders(trader.exchange_manager)
     assert all(o.status == trading_enums.OrderStatus.OPEN for o in open_orders)
     assert all(o.side == trading_enums.TradeOrderSide.SELL for o in open_orders)
+    assert all(isinstance(o, trading_personal_data.SellLimitOrder) for o in open_orders)
+    assert not any(isinstance(o, trading_personal_data.StopLossOrder) for o in open_orders)
     total_sell_quantity = sum(o.origin_quantity for o in open_orders)
     # rounding because orders to create volumes are X.33333
     assert sell_quantity * decimal.Decimal("0.9999") <= total_sell_quantity <= sell_quantity
@@ -292,6 +331,8 @@ async def test_create_sell_orders(tools):
     open_orders = trading_api.get_open_orders(trader.exchange_manager)
     assert all(o.status == trading_enums.OrderStatus.OPEN for o in open_orders)
     assert all(o.side == trading_enums.TradeOrderSide.SELL for o in open_orders)
+    assert all(isinstance(o, trading_personal_data.SellLimitOrder) for o in open_orders)
+    assert not any(isinstance(o, trading_personal_data.StopLossOrder) for o in open_orders)
     total_sell_quantity = sum(o.origin_quantity for o in open_orders if o.origin_price > 150)
     assert total_sell_quantity == sell_quantity
 
@@ -308,6 +349,85 @@ async def test_create_sell_orders(tools):
     await _fill_order(open_orders[-1], trader, trigger_update_callback=False, consumer=consumer)
     # create as task to allow creator's queue to get processed
     await asyncio.create_task(_check_open_orders_count(trader, consumer.trading_mode.sell_orders_per_buy * 2 - 2))
+
+
+async def test_create_sell_orders_with_stop_loss(tools):
+    producer, consumer, trader = tools
+
+    sell_quantity = decimal.Decimal("5")
+    sell_target = 2
+    buy_price = decimal.Decimal("100")
+    order_id = "a"
+    consumer.STOP_LOSS_PRICE_MULTIPLIER = decimal.Decimal("0.75")
+    stop_price = consumer.STOP_LOSS_PRICE_MULTIPLIER * buy_price
+    consumer.sell_targets_by_order_id[order_id] = sell_target
+    await producer._create_sell_order_if_enabled(order_id, sell_quantity, buy_price)
+    # create as task to allow creator's queue to get processed
+    for _ in range(consumer.trading_mode.sell_orders_per_buy):
+        await asyncio_tools.wait_asyncio_next_cycle()
+    # * 2 to account for the stop order associated to each sell order
+    await asyncio.create_task(_check_open_orders_count(trader, consumer.trading_mode.sell_orders_per_buy * 2))
+    open_orders = trading_api.get_open_orders(trader.exchange_manager)
+    assert all(o.status == trading_enums.OrderStatus.OPEN for o in open_orders)
+    assert all(o.side == trading_enums.TradeOrderSide.SELL for o in open_orders)
+    assert any(isinstance(o, (trading_personal_data.SellLimitOrder, trading_personal_data.StopLossOrder))
+               for o in open_orders)
+    total_sell_quantity = sum(o.origin_quantity for o in open_orders)
+    # rounding because orders to create volumes are X.33333
+    assert sell_quantity * decimal.Decimal("0.9999") * 2 <= total_sell_quantity <= sell_quantity * 2
+
+    # ensure order quantity and groups
+    limit_orders = [o for o in open_orders if isinstance(o, trading_personal_data.SellLimitOrder)]
+    stop_orders = [o for o in open_orders if isinstance(o, trading_personal_data.StopLossOrder)]
+    assert len(limit_orders) == len(stop_orders)
+    for limit, stop in zip(limit_orders, stop_orders):
+        assert isinstance(limit.order_group, trading_personal_data.OneCancelsTheOtherOrderGroup)
+        assert limit.order_group is stop.order_group
+        assert limit.origin_quantity == stop.origin_quantity
+        assert limit.origin_price > stop.origin_price
+        assert stop.origin_price == stop_price
+        group_orders = trader.exchange_manager.exchange_personal_data.orders_manager.get_order_from_group(
+            limit.order_group.name
+        )
+        assert group_orders == [limit, stop]
+
+    # now fill a sell order
+    await _fill_order(limit_orders[0], trader, trigger_update_callback=False, consumer=consumer, closed_orders_count=2)
+    # create as task to allow creator's queue to get processed
+    # also check that associated stop loss is cancelled
+    await asyncio.create_task(_check_open_orders_count(trader, consumer.trading_mode.sell_orders_per_buy * 2 - 2))
+    sell_quantity = decimal.Decimal("3")
+    sell_target = 3
+    buy_price = decimal.Decimal("2525")
+    order_id_2 = "b"
+    consumer.sell_targets_by_order_id[order_id_2] = sell_target
+    await producer._create_sell_order_if_enabled(order_id_2, sell_quantity, buy_price)
+    # create as task to allow creator's queue to get processed
+    for _ in range(consumer.trading_mode.sell_orders_per_buy):
+        await asyncio_tools.wait_asyncio_next_cycle()
+    await asyncio.create_task(_check_open_orders_count(trader, consumer.trading_mode.sell_orders_per_buy * 2 * 2 - 2))
+    open_orders = trading_api.get_open_orders(trader.exchange_manager)
+    assert all(o.status == trading_enums.OrderStatus.OPEN for o in open_orders)
+    assert all(o.side == trading_enums.TradeOrderSide.SELL for o in open_orders)
+    total_sell_quantity = sum(o.origin_quantity for o in open_orders if o.origin_price > 150)
+    assert total_sell_quantity == sell_quantity * 2
+
+    max_price = buy_price * consumer.PRICE_WEIGH_TO_PRICE_PERCENT[sell_target]
+    increment = (max_price - buy_price) / consumer.trading_mode.sell_orders_per_buy
+    limit_orders = [o for o in open_orders if isinstance(o, trading_personal_data.SellLimitOrder)]
+    stop_orders = [o for o in open_orders if isinstance(o, trading_personal_data.StopLossOrder)]
+    assert limit_orders[2 + 0].origin_price == \
+        trading_personal_data.decimal_trunc_with_n_decimal_digits(buy_price + increment, 8)
+    assert limit_orders[2 + 1].origin_price == \
+        trading_personal_data.decimal_trunc_with_n_decimal_digits(buy_price + 2 * increment, 8)
+    assert limit_orders[2 + 2].origin_price == \
+        trading_personal_data.decimal_trunc_with_n_decimal_digits(buy_price + 3 * increment, 8)
+
+    # now fill a stop order
+    await _fill_order(stop_orders[-1], trader, trigger_update_callback=False, consumer=consumer, closed_orders_count=2)
+    # create as task to allow creator's queue to get processed
+    # associated sell order gets cancelled
+    await asyncio.create_task(_check_open_orders_count(trader, consumer.trading_mode.sell_orders_per_buy * 2 * 2 - 2 * 2))
 
 
 async def test_create_too_large_sell_orders(tools):
@@ -550,19 +670,6 @@ async def _check_open_orders_count(trader, count):
     assert len(trading_api.get_open_orders(trader.exchange_manager)) == count
 
 
-async def _fill_order(order, trader, trigger_update_callback=True, ignore_open_orders=False, consumer=None):
-    initial_len = len(trading_api.get_open_orders(trader.exchange_manager))
-    await order.on_fill(force_fill=True)
-    if order.status == trading_enums.OrderStatus.FILLED:
-        if not ignore_open_orders:
-            assert len(trading_api.get_open_orders(trader.exchange_manager)) == initial_len - 1
-        if trigger_update_callback:
-            await asyncio_tools.wait_asyncio_next_cycle()
-        else:
-            with mock.patch.object(consumer, "create_new_orders", new=mock.AsyncMock()):
-                await asyncio_tools.wait_asyncio_next_cycle()
-
-
 async def _get_tools(symbol="BTC/USDT"):
     config = test_config.load_test_config()
     config[commons_constants.CONFIG_SIMULATOR][commons_constants.CONFIG_STARTING_PORTFOLIO]["USDT"] = 2000
@@ -599,6 +706,20 @@ async def _get_tools(symbol="BTC/USDT"):
     trading_api.force_set_mark_price(exchange_manager, symbol, 1000)
 
     return mode.producers[0], mode.get_trading_mode_consumers()[0], trader
+
+
+async def _fill_order(order, trader, trigger_update_callback=True, ignore_open_orders=False, consumer=None,
+                      closed_orders_count=1):
+    initial_len = len(trading_api.get_open_orders(trader.exchange_manager))
+    await order.on_fill(force_fill=True)
+    if order.status == trading_enums.OrderStatus.FILLED:
+        if not ignore_open_orders:
+            assert len(trading_api.get_open_orders(trader.exchange_manager)) == initial_len - closed_orders_count
+        if trigger_update_callback:
+            await asyncio_tools.wait_asyncio_next_cycle()
+        else:
+            with mock.patch.object(consumer, "create_new_orders", new=mock.AsyncMock()):
+                await asyncio_tools.wait_asyncio_next_cycle()
 
 
 async def _stop(exchange_manager):

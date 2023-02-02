@@ -13,13 +13,18 @@
 #
 #  You should have received a copy of the GNU Lesser General Public
 #  License along with this library.
+import asyncio
+
 import octobot_services.interfaces.util as interfaces_util
 import octobot.community as octobot_community
+import octobot.commands as octobot_commands
+import octobot.constants as octobot_constants
 import octobot_commons.authentication as authentication
+import octobot_trading.api as trading_api
 
 
 def get_community_metrics_to_display():
-    return octobot_community.get_community_metrics()
+    return interfaces_util.run_in_bot_async_executor(octobot_community.get_community_metrics())
 
 
 def can_get_community_metrics():
@@ -83,3 +88,67 @@ def select_bot(bot_id):
 
 def create_new_bot():
     return interfaces_util.run_in_bot_main_loop(authentication.Authenticator.instance().create_new_bot())
+
+
+def can_select_bot():
+    return not octobot_constants.COMMUNITY_BOT_ID
+
+
+def can_logout():
+    return not authentication.Authenticator.instance().must_be_authenticated_through_authenticator()
+
+
+def get_user_account_id():
+    return authentication.Authenticator.instance().get_user_id()
+
+
+def has_filled_form(form_id):
+    return authentication.Authenticator.instance().has_filled_form(form_id)
+
+
+def register_user_submitted_form(user_id, form_id):
+    try:
+        if get_user_account_id() != user_id:
+            return False, "Invalid user id"
+        interfaces_util.run_in_bot_main_loop(
+            authentication.Authenticator.instance().register_filled_form(form_id)
+        )
+    except Exception as e:
+        return False, f"Error when registering filled form {e}"
+    return True, "Thank you for your feedback !"
+
+
+def get_followed_strategy_url():
+    trading_mode = interfaces_util.get_bot_api().get_trading_mode()
+    if trading_mode is None:
+        return None
+    identifier = trading_api.get_trading_mode_followed_strategy_signals_identifier(trading_mode)
+    if identifier is None:
+        return None
+    return authentication.Authenticator.instance().get_signal_community_url(
+        identifier
+    )
+
+
+def is_community_feed_connected():
+    return authentication.Authenticator.instance().is_feed_connected()
+
+
+def get_last_signal_time():
+    return authentication.Authenticator.instance().get_feed_last_message_time()
+
+
+async def _sync_community_account():
+    profile_urls = await authentication.Authenticator.instance().get_subscribed_profile_urls()
+    return octobot_commands.download_missing_profiles(interfaces_util.get_edited_config(dict_only=False), profile_urls)
+
+
+def sync_community_account():
+    return interfaces_util.run_in_bot_main_loop(_sync_community_account())
+
+
+def wait_for_login_if_processing():
+    try:
+        interfaces_util.run_in_bot_main_loop(authentication.Authenticator.instance().wait_for_login_if_processing())
+    except asyncio.TimeoutError:
+        pass

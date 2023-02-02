@@ -57,7 +57,6 @@ class WebInterface(services_interfaces.AbstractWebInterface, threading.Thread):
         self.logger = self.get_logger()
         self.host = None
         self.port = None
-        self.session_secret_key = None
         self.websocket_instance = None
         self.web_login_manger = None
         self.requires_password = False
@@ -65,12 +64,6 @@ class WebInterface(services_interfaces.AbstractWebInterface, threading.Thread):
         self.dev_mode = False
         self.started = False
         self.registered_plugins = []
-        # Set services_constants.ENV_CORS_ALLOWED_ORIGINS env variable add stricter cors rules allowed origins
-        # example: http://localhost:5000
-        # Note: you can specify multiple origins using comma as a separator, ex: http://localhost:5000,https://a.com
-        self.cors_allowed_origins = os.getenv(services_constants.ENV_CORS_ALLOWED_ORIGINS, "*")
-        if "," in self.cors_allowed_origins:
-            self.cors_allowed_origins = self.cors_allowed_origins.split(",")
         self._init_web_settings()
 
     async def register_new_exchange_impl(self, exchange_id):
@@ -90,7 +83,6 @@ class WebInterface(services_interfaces.AbstractWebInterface, threading.Thread):
                                       [services_constants.CONFIG_WEB][services_constants.CONFIG_WEB_PORT]))
         except KeyError:
             self.port = int(os.getenv(services_constants.ENV_WEB_PORT, services_constants.DEFAULT_SERVER_PORT))
-        self.session_secret_key = Service_bases.WebService.generate_session_secret_key()
         try:
             self.requires_password = \
                 self.config[services_constants.CONFIG_CATEGORY_SERVICES][services_constants.CONFIG_WEB] \
@@ -140,7 +132,7 @@ class WebInterface(services_interfaces.AbstractWebInterface, threading.Thread):
         except ImportError:
             self.logger.error("Watching trade channels requires OctoBot-Trading package installed")
 
-    def init_flask_plugins(self, server_instance):
+    def init_flask_plugins_and_config(self, server_instance):
         # Only setup flask plugins once per flask app (can't call flask setup methods after the 1st request
         # has been received).
         if self.dev_mode:
@@ -152,7 +144,7 @@ class WebInterface(services_interfaces.AbstractWebInterface, threading.Thread):
         if not WebInterface.IS_FLASK_APP_CONFIGURED:
             flask_util.register_template_filters()
             # register session secret key
-            server_instance.secret_key = self.session_secret_key
+            server_instance.secret_key = flask_util.BrowsingDataProvider.instance().get_or_create_session_secret_key()
             self._handle_login(server_instance)
 
             security.register_responses_extra_header(server_instance, True)
@@ -172,7 +164,7 @@ class WebInterface(services_interfaces.AbstractWebInterface, threading.Thread):
         websocket_instance = flask_socketio.SocketIO(
             web_interface_root.server_instance,
             async_mode="gevent",
-            cors_allowed_origins=self.cors_allowed_origins
+            cors_allowed_origins=flask_util.get_user_defined_cors_allowed_origins()
         )
 
         @websocket_instance.on_error_default
@@ -195,7 +187,7 @@ class WebInterface(services_interfaces.AbstractWebInterface, threading.Thread):
             self.registered_plugins = web_interface_plugins.register_all_plugins(server_instance,
                                                                                  web_interface_root.registered_plugins)
             web_interface_root.update_registered_plugins(self.registered_plugins)
-            self.init_flask_plugins(server_instance)
+            self.init_flask_plugins_and_config(server_instance)
             self.websocket_instance = self._prepare_websocket()
 
             if self.should_open_web_interface:

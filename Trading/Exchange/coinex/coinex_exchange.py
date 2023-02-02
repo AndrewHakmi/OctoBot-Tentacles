@@ -13,10 +13,15 @@
 #
 #  You should have received a copy of the GNU Lesser General Public
 #  License along with this library.
+import decimal
+import typing
 
 import octobot_trading.exchanges as exchanges
+import octobot_trading.enums as trading_enums
+import octobot_trading.errors
 
-class Coinex(exchanges.SpotCCXTExchange):
+
+class Coinex(exchanges.RestExchange):
     DESCRIPTION = ""
     MAX_PAGINATION_LIMIT: int = 100
 
@@ -24,9 +29,8 @@ class Coinex(exchanges.SpotCCXTExchange):
     def get_name(cls):
         return 'coinex'
 
-    @classmethod
-    def is_supporting_exchange(cls, exchange_candidate_name) -> bool:
-        return cls.get_name() == exchange_candidate_name
+    def get_adapter_class(self):
+        return CoinexCCXTAdapter
 
     def get_market_status(self, symbol, price_example=None, with_fixer=True):
         return self.get_fixed_market_status(symbol, price_example=price_example, with_fixer=with_fixer)
@@ -43,5 +47,40 @@ class Coinex(exchanges.SpotCCXTExchange):
                                                limit=self._fix_limit(limit),
                                                **kwargs)
 
+    async def create_order(self, order_type: trading_enums.TraderOrderType, symbol: str, quantity: decimal.Decimal,
+                           price: decimal.Decimal = None, stop_price: decimal.Decimal = None,
+                           side: trading_enums.TradeOrderSide = None, current_price: decimal.Decimal = None,
+                           params: dict = None) -> typing.Optional[dict]:
+        # tell ccxt to use amount as provided and not to compute it by multiplying it by price which is done here
+        # (price should not be sent to market orders). Only used for buy market orders
+        self.connector.add_options({"createMarketBuyOrderRequiresPrice": False})
+        if order_type is trading_enums.TraderOrderType.BUY_MARKET:
+            # on coinex, market orders are in quote currency (YYY in XYZ/YYY)
+            if price is None:
+                raise octobot_trading.errors.NotSupported(f"{self.get_name()} requires a price parameter to create "
+                                                          f"market orders as quantity is in quote currency")
+            quantity = quantity * price
+        return await super().create_order(order_type, symbol, quantity,
+                                         price=price, stop_price=stop_price,
+                                         side=side, current_price=current_price,
+                                         params=params)
+
     def _fix_limit(self, limit: int) -> int:
         return min(self.MAX_PAGINATION_LIMIT, limit)
+
+
+class CoinexCCXTAdapter(exchanges.CCXTAdapter):
+
+    def fix_order(self, raw, **kwargs):
+        fixed = super().fix_order(raw, **kwargs)
+        try:
+            if fixed[trading_enums.ExchangeConstantsOrderColumns.TYPE.value] \
+                    == trading_enums.TradeOrderType.MARKET.value and \
+                    fixed[trading_enums.ExchangeConstantsOrderColumns.SIDE.value] \
+                    == trading_enums.TradeOrderSide.BUY.value:
+                # convert amount to have the same units as evert other exchange: use FILLED for accuracy
+                fixed[trading_enums.ExchangeConstantsOrderColumns.AMOUNT.value] = \
+                    fixed[trading_enums.ExchangeConstantsOrderColumns.FILLED.value]
+        except KeyError:
+            pass
+        return fixed

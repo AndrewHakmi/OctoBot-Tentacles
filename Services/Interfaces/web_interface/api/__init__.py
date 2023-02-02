@@ -20,10 +20,12 @@ api = flask.Blueprint('api', __name__, url_prefix='/api', template_folder="")
 
 from tentacles.Services.Interfaces.web_interface.api import config
 from tentacles.Services.Interfaces.web_interface.api import exchanges
+from tentacles.Services.Interfaces.web_interface.api import feedback
 from tentacles.Services.Interfaces.web_interface.api import metadata
 from tentacles.Services.Interfaces.web_interface.api import trading
 from tentacles.Services.Interfaces.web_interface.api import user_commands
 from tentacles.Services.Interfaces.web_interface.api import bots
+from tentacles.Services.Interfaces.web_interface.api import webhook
 
 
 from tentacles.Services.Interfaces.web_interface.api.config import (
@@ -36,6 +38,7 @@ from tentacles.Services.Interfaces.web_interface.api.exchanges import (
     first_exchange_details,
 )
 from tentacles.Services.Interfaces.web_interface.api.metadata import (
+    ping,
     version,
     upgrade_version,
     user_feedback,
@@ -53,10 +56,18 @@ from tentacles.Services.Interfaces.web_interface.api.bots import (
     select_bot,
     create_bot,
 )
+from tentacles.Services.Interfaces.web_interface.api.webhook import (
+    register_webhook,
+    has_webhook,
+)
+from tentacles.Services.Interfaces.web_interface.api.feedback import (
+    register_submitted_form,
+)
 
 __all__ = [
     "are_compatible_accounts",
     "first_exchange_details",
+    "ping",
     "version",
     "upgrade_version",
     "user_feedback",
@@ -70,4 +81,7 @@ __all__ = [
     "change_reference_market_on_config_currencies",
     "create_bot",
     "select_bot",
+    "register_webhook",
+    "has_webhook",
+    "register_submitted_form",
 ]

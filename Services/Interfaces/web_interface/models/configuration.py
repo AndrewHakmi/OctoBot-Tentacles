@@ -18,10 +18,9 @@ import os.path as path
 import ccxt
 import ccxt.async_support
 import copy
-import re
 import requests.adapters
 import requests.packages.urllib3.util.retry
-import octobot_commons.display as display
+import aiohttp
 
 import octobot_evaluators.constants as evaluators_constants
 import octobot_evaluators.evaluators as evaluators
@@ -35,7 +34,6 @@ import octobot_trading.api as trading_api
 import octobot_trading.constants as trading_constants
 import octobot_trading.modes as trading_modes
 import octobot_trading.exchanges as trading_exchanges
-import tentacles.Services.Interfaces.web_interface.constants as constants
 import octobot_commons.constants as commons_constants
 import octobot_commons.logging as bot_logging
 import octobot_commons.enums as commons_enums
@@ -44,14 +42,18 @@ import octobot_commons.tentacles_management as tentacles_management
 import octobot_commons.time_frame_manager as time_frame_manager
 import octobot_commons.authentication as authentication
 import octobot_commons.symbols as commons_symbols
+import octobot_commons.display as display
+import octobot_commons
 import octobot_backtesting.api as backtesting_api
 import octobot.community as community
 import octobot.constants as octobot_constants
 import octobot.enums as octobot_enums
+import tentacles.Services.Interfaces.web_interface.constants as constants
 
 NAME_KEY = "name"
-SYMBOL_KEY = "symbol"
-ID_KEY = "id"
+SHORT_NAME_KEY = "n"
+SYMBOL_KEY = "s"
+ID_KEY = "i"
 EXCLUDED_CURRENCY_SUBNAME = tuple(("X Long", "X Short"))
 DESCRIPTION_KEY = "description"
 REQUIREMENTS_KEY = "requirements"
@@ -84,6 +86,26 @@ NON_TRADING_STRATEGY_RELATED_TENTACLES = [tentacles_manager_constants.TENTACLES_
                                           tentacles_manager_constants.TENTACLES_TRADING_PATH]
 
 DEFAULT_EXCHANGE = "binance"
+MERGED_CCXT_EXCHANGES = {
+    result.__name__: merged.__name__
+    for result, merged in (
+        (ccxt.async_support.kucoin, ccxt.async_support.kucoinfutures),
+    )
+}
+REMOVED_CCXT_EXCHANGES = set(MERGED_CCXT_EXCHANGES.values())
+FULL_EXCHANGE_LIST = [
+    exchange
+    for exchange in set(ccxt.async_support.exchanges)
+    if exchange not in REMOVED_CCXT_EXCHANGES
+]
+
+
+def _get_currency_dict(name, symbol, identifier):
+    return {
+        SHORT_NAME_KEY: name,
+        SYMBOL_KEY: symbol.upper(),
+        ID_KEY: identifier
+    }
 
 # buffers to faster config page loading
 markets_by_exchanges = {}
@@ -188,7 +210,7 @@ def _add_to_missing_tentacles_if_missing(tentacle_name: str, missing_tentacles: 
     except KeyError:
         missing_tentacles.add(tentacle_name)
     except AttributeError:
-        _get_logger().error(f"Missing tentacles data for {tentacle_name}. This is likely due to an error in the "
+        _get_logger().debug(f"Missing tentacles data for {tentacle_name}. This is likely due to an error in the "
                             f"associated metadata.json file.")
         missing_tentacles.add(tentacle_name)
 
@@ -248,8 +270,8 @@ def get_tentacle_user_commands(klass):
     return klass.get_user_commands() if klass is not None and hasattr(klass, "get_user_commands") else {}
 
 
-def get_tentacle_config_and_edit_display(tentacle):
-    tentacle_class = tentacles_manager_api.get_tentacle_class_from_string(tentacle)
+def get_tentacle_config_and_edit_display(tentacle, tentacle_class=None):
+    tentacle_class = tentacle_class or tentacles_manager_api.get_tentacle_class_from_string(tentacle)
     config, user_inputs = interfaces_util.run_in_bot_main_loop(
         tentacle_class.get_raw_config_and_user_inputs(
             interfaces_util.get_edited_config(),
@@ -264,6 +286,28 @@ def get_tentacle_config_and_edit_display(tentacle):
         CONFIG_KEY: config or {},
         DISPLAYED_ELEMENTS_KEY: display_elements.to_json()
     }
+
+
+def restart_global_automations():
+    interfaces_util.run_in_bot_main_loop(
+        interfaces_util.get_bot_api().get_automation().restart()
+    )
+
+
+def get_all_automation_steps():
+    return interfaces_util.get_bot_api().get_automation().get_all_steps()
+
+
+def has_at_least_one_running_automation():
+    return bool(interfaces_util.get_bot_api().get_automation().automation_details)
+
+
+def reset_automation_config_to_default():
+    try:
+        interfaces_util.get_bot_api().get_automation().reset_config()
+        return True, f"{interfaces_util.get_bot_api().get_automation().get_name()} configuration reset to default values"
+    except Exception as err:
+        return False, str(err)
 
 
 def get_tentacle_config(klass):
@@ -320,13 +364,13 @@ def get_tentacles_activation_desc_by_group(media_url, missing_tentacles: set):
             if len(tentacles) > 1}
 
 
-def update_tentacle_config(tentacle_name, config_update):
+def update_tentacle_config(tentacle_name, config_update, tentacle_class=None):
     try:
-        klass, _, _ = get_tentacle_from_string(tentacle_name, None, with_info=False)
-        if klass is None:
+        tentacle_class = tentacle_class or get_tentacle_from_string(tentacle_name, None, with_info=False)[0]
+        if tentacle_class is None:
             return False, f"Can't find {tentacle_name} class"
         tentacles_manager_api.update_tentacle_config(interfaces_util.get_edited_tentacles_config(),
-                                                     klass,
+                                                     tentacle_class,
                                                      config_update)
         return True, f"{tentacle_name} updated"
     except Exception as e:
@@ -344,11 +388,11 @@ def update_copied_trading_id(copy_id):
     )
 
 
-def reset_config_to_default(tentacle_name):
+def reset_config_to_default(tentacle_name, tentacle_class):
     try:
-        klass, _, _ = get_tentacle_from_string(tentacle_name, None, with_info=False)
+        tentacle_class = tentacle_class or get_tentacle_from_string(tentacle_name, None, with_info=False)[0]
         tentacles_manager_api.factory_tentacle_reset_config(interfaces_util.get_edited_tentacles_config(),
-                                                            klass)
+                                                            tentacle_class)
         return True, f"{tentacle_name} configuration reset to default values"
     except FileNotFoundError as e:
         error_message = f"Error when resetting factory tentacle config: no default values file at {e.filename}"
@@ -548,14 +592,18 @@ def _handle_special_fields(config, new_config):
 
 
 def update_global_config(new_config, delete=False):
-    current_edited_config = interfaces_util.get_edited_config(dict_only=False)
-    if not delete:
-        _handle_special_fields(current_edited_config.config, new_config)
-    current_edited_config.update_config_fields(new_config,
-                                               backtesting_api.is_backtesting_enabled(current_edited_config.config),
-                                               constants.UPDATED_CONFIG_SEPARATOR,
-                                               delete=delete)
-    return True
+    try:
+        current_edited_config = interfaces_util.get_edited_config(dict_only=False)
+        if not delete:
+            _handle_special_fields(current_edited_config.config, new_config)
+        current_edited_config.update_config_fields(new_config,
+                                                   backtesting_api.is_backtesting_enabled(current_edited_config.config),
+                                                   constants.UPDATED_CONFIG_SEPARATOR,
+                                                   delete=delete)
+        return True, ""
+    except Exception as e:
+        _get_logger().exception(e, True, f"Error when updating global config {e}")
+        return False, str(e)
 
 
 def activate_metrics(enable_metrics):
@@ -621,23 +669,46 @@ def get_symbol_list(exchanges):
     return list(set(result))
 
 
+def _get_filtered_exchange_symbols(symbols):
+    return [res for res in symbols if octobot_commons.MARKET_SEPARATOR in res]
+
+
 async def _load_market(exchange, results):
     try:
         async with getattr(ccxt.async_support, exchange)({'verbose': False}) as exchange_inst:
             await exchange_inst.load_markets()
             # filter symbols with a "." or no "/" because bot can't handle them for now
-            markets_by_exchanges[exchange] = [res for res in exchange_inst.symbols if "/" in res]
+            markets_by_exchanges[exchange] = _get_filtered_exchange_symbols(exchange_inst.symbols)
             results.append(markets_by_exchanges[exchange])
     except Exception as e:
         _get_logger().exception(e, True, f"error when loading symbol list for {exchange}: {e}")
+
+
+def _add_merged_exchanges(exchanges):
+    extended = copy.copy(exchanges)
+    for exchange in exchanges:
+        if exchange in MERGED_CCXT_EXCHANGES:
+            extended.append(MERGED_CCXT_EXCHANGES[exchange])
+    return extended
 
 
 async def _load_markets(exchanges):
     result = []
     results = []
     fetch_coros = []
-    for exchange in exchanges:
+    exchange_managers = trading_api.get_exchange_managers_from_exchange_ids(
+        trading_api.get_exchange_ids()
+    )
+    exchange_manager_by_exchange_name = {
+        trading_api.get_exchange_name(exchange_manager): exchange_manager
+        for exchange_manager in exchange_managers
+    }
+    for exchange in _add_merged_exchanges(exchanges):
         if exchange not in exchange_symbol_fetch_blacklist:
+            if exchange in exchange_manager_by_exchange_name and exchange not in markets_by_exchanges:
+                markets_by_exchanges[exchange] = _get_filtered_exchange_symbols(
+                    trading_api.get_all_exchange_symbols(exchange_manager_by_exchange_name[exchange])
+                )
             if exchange in markets_by_exchanges:
                 result += markets_by_exchanges[exchange]
             else:
@@ -659,7 +730,7 @@ def get_timeframes_list(exchanges):
     for exchange in exchanges:
         if exchange not in exchange_symbol_fetch_blacklist:
             timeframes_list += interfaces_util.run_in_bot_async_executor(
-                    trading_api.get_exchange_available_time_frames(exchange))
+                    trading_api.get_ccxt_exchange_available_time_frames(exchange))
     return [commons_enums.TimeFrames(time_frame)
             for time_frame in list(set(timeframes_list))
             if time_frame in allowed_timeframes]
@@ -681,8 +752,12 @@ def _is_legit_currency(currency):
     return not any(sub_name in currency for sub_name in EXCLUDED_CURRENCY_SUBNAME) and len(currency) < 30
 
 
-def get_all_symbols_dict():
-    if not all_symbols_dict:
+def get_all_symbols_list():
+    import tentacles.Services.Interfaces.web_interface.flask_util as flask_util
+    data_provider = flask_util.BrowsingDataProvider.instance()
+    all_currencies = copy.copy(data_provider.get_all_currencies())
+    if not all_currencies:
+        added_is = set()
         request_response = None
         base_error = "Failed to get currencies list from coingecko.com (this is a display only issue): "
         try:
@@ -691,27 +766,32 @@ def get_all_symbols_dict():
             retries = requests.packages.urllib3.util.retry.Retry(total=3, backoff_factor=0.5,
                                                                  status_forcelist=[502, 503, 504])
             session.mount('http://', requests.adapters.HTTPAdapter(max_retries=retries))
-            # get top 500 coins (2 * 250)
-            for i in range(1, 3):
-                request_response = session.get(f"{constants.CURRENCIES_LIST_URL}{i}")
+            # first fetch top 250 currencies then add all currencies and their ids
+            for url in (f"{constants.CURRENCIES_LIST_URL}1", constants.ALL_SYMBOLS_URL):
+                request_response = session.get(url)
                 if request_response.status_code == 429:
                     # rate limit issue
-                    all_symbols_dict.clear()
                     _get_logger().warning(f"{base_error}Too many requests, retry in a few seconds")
                     break
                 for currency_data in request_response.json():
                     if _is_legit_currency(currency_data[NAME_KEY]):
-                        all_symbols_dict[currency_data[NAME_KEY]] = {
-                            SYMBOL_KEY: currency_data[SYMBOL_KEY].upper(),
-                            ID_KEY: currency_data[ID_KEY]
-                        }
+                        currency_id = currency_data["id"]
+                        if currency_id not in added_is:
+                            added_is.add(currency_id)
+                            all_currencies.append(_get_currency_dict(
+                                currency_data[NAME_KEY],
+                                currency_data["symbol"],
+                                currency_id
+                            ))
+            # fetched_all: save it
+            data_provider.set_all_currencies(all_currencies)
         except Exception as e:
             details = f"code: {request_response.status_code}, body: {request_response.text}" \
                 if request_response else {request_response}
             _get_logger().exception(e, True, f"{base_error}{e}")
             _get_logger().debug(f"coingecko.com response {details}")
             return {}
-    return all_symbols_dict
+    return all_currencies
 
 
 def get_exchange_logo(exchange_name):
@@ -729,6 +809,59 @@ def get_exchange_logo(exchange_name):
     return exchange_logos[exchange_name]
 
 
+def _get_currency_logo_url(currency_id):
+    return f"https://api.coingecko.com/api/v3/coins/{currency_id}?localization=false&tickers=false&market_data=" \
+           f"false&community_data=false&developer_data=false&sparkline=false"
+
+
+async def _fetch_currency_logo(session, data_provider, currency_id):
+    if not currency_id:
+        return
+    async with session.get(_get_currency_logo_url(currency_id)) as resp:
+        logo = None
+        try:
+            json_resp = await resp.json()
+            logo = json_resp["image"]["large"]
+        except KeyError:
+            if resp.status == 429:
+                _get_logger().debug(f"Rate limitted when trying to fetch logo for {currency_id}. Will retry later")
+            else:
+                # not rate limit: problem
+                _get_logger().warning(f"Unexpected error when fetching {currency_id} currency logos: "
+                                      f"status: {resp.status} text: {await resp.text()}")
+        # can't fetch image for some reason, use default
+        data_provider.set_currency_logo_url(currency_id, logo, dump=False)
+
+
+async def _fetch_missing_currency_logos(data_provider, currency_ids):
+    async with aiohttp.ClientSession() as session:
+        await asyncio.gather(
+            *(
+                _fetch_currency_logo(session, data_provider, currency_id)
+                for currency_id in currency_ids
+                if data_provider.get_currency_logo_url(currency_id) is None
+            )
+        )
+    data_provider.dump_saved_data()
+
+
+def get_currency_logo_urls(currency_ids):
+    import tentacles.Services.Interfaces.web_interface.flask_util as flask_util
+    data_provider = flask_util.BrowsingDataProvider.instance()
+    if any(
+        data_provider.get_currency_logo_url(currency_id) is None
+        for currency_id in currency_ids
+    ):
+        interfaces_util.run_in_bot_async_executor(_fetch_missing_currency_logos(data_provider, currency_ids))
+    return [
+        {
+            "id": currency_id,
+            "logo": data_provider.get_currency_logo_url(currency_id)
+        }
+        for currency_id in currency_ids
+    ]
+
+
 def get_traded_time_frames(exchange_manager):
     return trading_api.get_relevant_time_frames(exchange_manager)
 
@@ -737,21 +870,19 @@ def get_full_exchange_list(remove_config_exchanges=False):
     g_config = interfaces_util.get_global_config()
     if remove_config_exchanges:
         user_exchanges = [e for e in g_config[commons_constants.CONFIG_EXCHANGES]]
-        full_exchange_list = list(set(ccxt.exchanges) - set(user_exchanges))
+        full_exchange_list = list(set(FULL_EXCHANGE_LIST) - set(user_exchanges))
     else:
-        full_exchange_list = list(set(ccxt.exchanges))
+        full_exchange_list = FULL_EXCHANGE_LIST
     # can't handle exchanges containing UPDATED_CONFIG_SEPARATOR character in their name
     return [exchange for exchange in full_exchange_list if constants.UPDATED_CONFIG_SEPARATOR not in exchange]
 
 
 def get_tested_exchange_list():
-    full_exchange_list = list(set(ccxt.exchanges))
-    return [exchange for exchange in trading_constants.TESTED_EXCHANGES if exchange in full_exchange_list]
+    return [exchange for exchange in trading_constants.TESTED_EXCHANGES if exchange in FULL_EXCHANGE_LIST]
 
 
 def get_simulated_exchange_list():
-    full_exchange_list = list(set(ccxt.exchanges))
-    return [exchange for exchange in trading_constants.SIMULATOR_TESTED_EXCHANGES if exchange in full_exchange_list]
+    return [exchange for exchange in trading_constants.SIMULATOR_TESTED_EXCHANGES if exchange in FULL_EXCHANGE_LIST]
 
 
 def get_other_exchange_list(remove_config_exchanges=False):
@@ -774,7 +905,8 @@ def get_exchanges_details(exchanges_config) -> dict:
         details[exchange_name] = {
             "has_websockets": trading_api.supports_websockets(exchange_name, tentacles_setup_config),
             "configurable": False if exchange_class is None else exchange_class.is_configurable(),
-            "supported_exchange_types": trading_api.get_supported_exchange_types(exchange_name)
+            "supported_exchange_types": trading_api.get_supported_exchange_types(exchange_name),
+            "default_exchange_type": trading_api.get_default_exchange_type(exchange_name),
         }
     return details
 
@@ -819,6 +951,7 @@ def are_compatible_accounts(exchange_details: dict) -> dict:
         api_key = exchange_detail["apiKey"]
         api_sec = exchange_detail["apiSecret"]
         api_pass = exchange_detail["apiPassword"]
+        sandboxed = exchange_detail[commons_constants.CONFIG_EXCHANGE_SANDBOXED]
         to_check_config = copy.deepcopy(interfaces_util.get_edited_config()[commons_constants.CONFIG_EXCHANGES].get(
             exchange_name, {}))
         if _is_real_exchange_value(api_key):
@@ -827,6 +960,7 @@ def are_compatible_accounts(exchange_details: dict) -> dict:
             to_check_config[commons_constants.CONFIG_EXCHANGE_SECRET] = configuration.encrypt(api_sec).decode()
         if _is_real_exchange_value(api_pass):
             to_check_config[commons_constants.CONFIG_EXCHANGE_PASSWORD] = configuration.encrypt(api_pass).decode()
+        to_check_config[commons_constants.CONFIG_EXCHANGE_SANDBOXED] = sandboxed
         is_compatible = auth_success = is_configured = False
         is_sponsoring = trading_api.is_sponsoring(exchange_name)
         is_supporter = authentication.Authenticator.instance().user_account.supports.is_supporting()
@@ -870,10 +1004,8 @@ def _is_real_exchange_value(value):
 
 
 def get_current_exchange():
-    g_config = interfaces_util.get_global_config()
-    exchanges = g_config[commons_constants.CONFIG_EXCHANGES]
-    if exchanges:
-        return next(iter(exchanges))
+    for exchange_manager in interfaces_util.get_exchange_managers():
+        return trading_api.get_exchange_name(exchange_manager)
     else:
         return DEFAULT_EXCHANGE
 

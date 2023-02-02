@@ -35,23 +35,36 @@ import octobot_services.interfaces.util as interfaces_util
 @login.login_required_when_activated
 def profile():
     selected_profile = flask.request.args.get("select", None)
+    next_url = flask.request.args.get("next", None)
     if selected_profile is not None and selected_profile != models.get_current_profile().profile_id:
         models.select_profile(selected_profile)
         current_profile = models.get_current_profile()
-        flask.flash(f"Switched to {current_profile.name} profile.", "success")
+        flask.flash(
+            f"Switched to {current_profile.name} profile", "success"
+        )
     else:
         current_profile = models.get_current_profile()
+    if next_url is not None:
+        return flask.redirect(next_url)
     media_url = flask.url_for("tentacle_media", _external=True)
     display_config = interfaces_util.get_edited_config()
 
     missing_tentacles = set()
     profiles = models.get_profiles()
     config_exchanges = display_config[commons_constants.CONFIG_EXCHANGES]
-
+    enabled_exchanges = [
+        exchange
+        for exchange, exchange_config in config_exchanges.items()
+        if exchange_config.get(commons_constants.CONFIG_ENABLED_OPTION, True)
+    ]
+    display_intro = flask_util.BrowsingDataProvider.instance().get_and_unset_is_first_display(
+        flask_util.BrowsingDataProvider.PROFILE
+    )
     return flask.render_template('profile.html',
                                  current_profile=current_profile,
                                  profiles=profiles,
                                  profiles_tentacles_details=models.get_profiles_tentacles_details(profiles),
+                                 display_intro=display_intro,
 
                                  config_exchanges=config_exchanges,
                                  config_trading=display_config[commons_constants.CONFIG_TRADING],
@@ -63,10 +76,8 @@ def profile():
 
                                  real_trader_activated=interfaces_util.has_real_and_or_simulated_traders()[0],
 
-                                 symbol_list=sorted(models.get_symbol_list([exchange
-                                                                            for exchange in display_config[
-                                                                                commons_constants.CONFIG_EXCHANGES]])),
-                                 full_symbol_list=models.get_all_symbols_dict(),
+                                 symbol_list=sorted(models.get_symbol_list(enabled_exchanges or config_exchanges)),
+                                 full_symbol_list=models.get_all_symbols_list(),
                                  evaluator_config=models.get_evaluator_detailed_config(media_url, missing_tentacles),
                                  strategy_config=models.get_strategy_config(media_url, missing_tentacles),
                                  evaluator_startup_config=models.get_evaluators_tentacles_startup_activation(),
@@ -104,17 +115,23 @@ def profiles_management(action):
             return util.get_rest_reply(flask.jsonify(str(err)), code=400)
         flask.flash(f"{removed_profile.name} profile removed.", "success")
         return util.get_rest_reply(flask.jsonify("Profile created"))
+    next_url = flask.request.args.get("next", flask.url_for('profile'))
     if action == "import":
         file = flask.request.files['file']
         name = werkzeug.utils.secure_filename(flask.request.files['file'].filename)
         new_profile = models.import_profile(file, name)
         flask.flash(f"{new_profile.name} profile successfully imported.", "success")
-        return flask.redirect(flask.url_for('profile'))
+        return flask.redirect(next_url)
     if action == "download":
         url = flask.request.form['inputProfileLink']
-        new_profile = name = models.download_and_import_profile(url)
-        flask.flash(f"{new_profile.name} profile successfully imported.", "success")
-        return flask.redirect(flask.url_for('profile'))
+        try:
+            new_profile = models.download_and_import_profile(url)
+            flask.flash(f"{new_profile.name} profile successfully imported.", "success")
+        except FileNotFoundError:
+            flask.flash(f"Invalid profile url {url}", "danger")
+        except Exception as err:
+            flask.flash(f"Error when importing profile: {err}", "danger")
+        return flask.redirect(next_url)
     if action == "export":
         profile_id = flask.request.args.get("profile_id")
         temp_file = os.path.abspath("profile")
@@ -155,6 +172,7 @@ def config():
     request_data = flask.request.get_json()
     success = True
     response = ""
+    err_message = ""
 
     if request_data:
 
@@ -186,13 +204,14 @@ def config():
         # remove elements from global config if any to remove
         removed_elements_key = "removed_elements"
         if removed_elements_key in request_data and request_data[removed_elements_key]:
-            success = success and models.update_global_config(request_data[removed_elements_key], delete=True)
+            update_success, err_message = models.update_global_config(request_data[removed_elements_key], delete=True)
+            success = success and update_success
         else:
             request_data[removed_elements_key] = ""
 
         # update global config if required
         if constants.GLOBAL_CONFIG_KEY in request_data and request_data[constants.GLOBAL_CONFIG_KEY]:
-            success = models.update_global_config(request_data[constants.GLOBAL_CONFIG_KEY])
+            success, err_message = models.update_global_config(request_data[constants.GLOBAL_CONFIG_KEY])
         else:
             request_data[constants.GLOBAL_CONFIG_KEY] = ""
 
@@ -209,7 +228,7 @@ def config():
             models.schedule_delayed_command(models.restart_bot)
         return util.get_rest_reply(flask.jsonify(response))
     else:
-        return util.get_rest_reply('{"update": "ko"}', 500)
+        return util.get_rest_reply(flask.jsonify(err_message), 500)
 
 
 @web_interface.server_instance.route('/config_tentacle', methods=['GET', 'POST'])

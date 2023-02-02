@@ -26,6 +26,7 @@ import octobot_services.interfaces as interfaces
 import octobot_commons.singleton as singleton
 import octobot_commons.authentication as authentication
 import octobot.community as community
+import octobot.automation as automation
 
 
 PORT = 5555
@@ -56,9 +57,11 @@ async def _init_bot():
     octobot.configuration_manager.add_element(octobot_constants.TENTACLES_SETUP_CONFIG_KEY, tentacles_config)
     octobot.exchange_producer = producers.ExchangeProducer(None, octobot, None, False)
     octobot.evaluator_producer = producers.EvaluatorProducer(None, octobot)
-    octobot.evaluator_producer.matrix_id = await evaluators_api.initialize_evaluators(octobot.config, tentacles_config)
+    await evaluators_api.initialize_evaluators(octobot.config, tentacles_config)
+    octobot.evaluator_producer.matrix_id = evaluators_api.create_matrix()
     # Do not edit config file
     octobot.community_auth.edited_config = None
+    octobot.automation = automation.Automation(octobot.bot_id, tentacles_config)
     return octobot
 
 
@@ -96,7 +99,8 @@ async def check_page_no_login_redirect(url, session):
         text = await resp.text()
         assert "We are sorry, but an unexpected error occurred" not in text
         assert "We are sorry, but this doesn't exist" not in text
-        if not (url.endswith("login") or url.endswith("logout") or url.endswith("/community")):
+        if not (url.endswith("login") or url.endswith("logout")
+                or url.endswith("/community") or url.endswith("/profiles_selector")):
             assert "input type=submit value=Login" not in text
             assert not resp.real_url.name == "login"
         if url.endswith("historical_portfolio_value"):

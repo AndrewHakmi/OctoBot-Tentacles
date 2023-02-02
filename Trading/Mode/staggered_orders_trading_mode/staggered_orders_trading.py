@@ -119,14 +119,14 @@ class StaggeredOrdersTradingMode(trading_modes.AbstractTradingMode):
         those are defined somewhere else.
         """
         self.UI.user_input(self.CONFIG_PAIR_SETTINGS, commons_enums.UserInputTypes.OBJECT_ARRAY,
-                        self.trading_config.get(self.CONFIG_PAIR_SETTINGS, None), inputs,
-                        item_title="Pair configuration",
-                        other_schema_values={"minItems": 1, "uniqueItems": True},
-                        title="Configuration for each traded pairs.")
+                           self.trading_config.get(self.CONFIG_PAIR_SETTINGS, None), inputs,
+                           item_title="Pair configuration",
+                           other_schema_values={"minItems": 1, "uniqueItems": True},
+                           title="Configuration for each traded pairs.")
         self.UI.user_input(self.CONFIG_PAIR, commons_enums.UserInputTypes.TEXT, "BTC/USDT", inputs,
-                        other_schema_values={"minLength": 3, "pattern": "([a-zA-Z]|\\d){2,}\\/([a-zA-Z]|\\d){2,}"},
-                        parent_input_name=self.CONFIG_PAIR_SETTINGS,
-                        title="Name of the traded pair."),
+                           other_schema_values={"minLength": 3, "pattern": "([a-zA-Z]|\\d){2,}\\/([a-zA-Z]|\\d){2,}"},
+                           parent_input_name=self.CONFIG_PAIR_SETTINGS,
+                           title="Name of the traded pair."),
         self.UI.user_input(
             self.CONFIG_MODE, commons_enums.UserInputTypes.OPTIONS, StrategyModes.NEUTRAL.value, inputs,
             options=list(mode.value for mode in StrategyModes),
@@ -145,7 +145,7 @@ class StaggeredOrdersTradingMode(trading_modes.AbstractTradingMode):
             min_val=0, other_schema_values={"exclusiveMinimum": True},
             parent_input_name=self.CONFIG_PAIR_SETTINGS,
             title="Increment: price difference between grid orders: percent of the current price to use as increment "
-                  "between orders. WARNING: this should to be lower than the Spread value: profitability is close to "
+                  "between orders. WARNING: this should be lower than the Spread value: profitability is close to "
                   "Spread-Increment.",
         )
         self.UI.user_input(
@@ -586,7 +586,7 @@ class StaggeredOrdersTradingModeProducer(trading_modes.AbstractTradingModeProduc
         if interfering_orders_pairs:
             self.logger.error(f"Impossible to create {self.ORDERS_DESC} orders for {self.symbol} with "
                               f"interfering orders using pair(s): {interfering_orders_pairs}. "
-                              f"{self.ORDERS_DESC.capitalize()} orders require no other orders in both quote and base.")
+                              f"{self.ORDERS_DESC.capitalize()} orders require no other orders in both base and quote.")
             return [], []
         existing_orders = order_manager.get_open_orders(self.symbol)
 

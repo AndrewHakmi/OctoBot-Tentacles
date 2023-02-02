@@ -98,6 +98,55 @@ function check_deck_modifications(deck){
 }
 
 function handle_add_buttons(){
+    handleCardDecksAddButtons();
+    handleEditableAddButtons();
+}
+
+function handleEditableAddButtons(){
+    $("button[data-role='editable-add']").click((jsElement) => {
+        const button = $(jsElement.currentTarget);
+        const parentContainer = button.parent();
+        const targetTemplate = parentContainer.find(`span[data-add-template-for='${button.attr("data-add-template-target")}']`);
+        const selectedValue = button.data("default-key");
+        let newEditable = targetTemplate.html().replace(new RegExp("Empty","g"), selectedValue);
+        button.before(newEditable);
+        handle_editable();
+        register_edit_events();
+    })
+}
+
+function handleEditableRenameIfNotAlready(e, params){
+    const element = $(e.target);
+    // 0. update key-value config to use the new key
+    const previousKey = element.text().trim();
+    let newKey = element.text().trim();
+    if(isDefined(params) && isDefined(params["newValue"])){
+        newKey = params["newValue"];
+    }
+    const previousConfigKey = element.attr("data-label-for");
+    const valueToUpdate = element.parent().parent().find(`a[config-key=${previousConfigKey}]`);
+    const newConfigKey = previousConfigKey.replace(new RegExp(previousKey,"g"), newKey);
+    element.attr("data-label-for", newConfigKey)
+    valueToUpdate.attr("config-key", newConfigKey)
+    // 1. force change to the associated value to save it
+    valueToUpdate.data("changed", true);
+    // 2. add previous key to deleted values unless it's the default key
+    deleted_global_config_elements.push(previousConfigKey);
+    const card_container = get_card_container(element);
+    toogle_card_modified(card_container, true);
+}
+
+function registerHandleEditableRenameIfNotAlready(element, events, handler){
+    if(typeof element.data("label-for") !== "undefined"){
+        events.forEach((event) => {
+            if(!check_has_event_using_handler(element, event, handler)){
+                element.on(event, handler);
+            }
+        })
+    }
+}
+
+function handleCardDecksAddButtons(){
     // Card deck adding
     $(".add-btn").click(function() {
 
@@ -108,17 +157,13 @@ function handle_add_buttons(){
         let select_value = select_input.val();
 
         // currencies
-        const data_token = select_input.children("[data-tokens='"+select_value+"']");
-        const symbol_attr = data_token.attr("symbol");
-        const select_symbol = isDefined(symbol_attr) ? symbol_attr.toUpperCase(): "";
+        const currencyDetails = currencyDetailsById[select_value];
+        let select_symbol = "";
         let currency_id = undefined;
-        if(isDefined(data_token[0])){
-            if (data_token[0].hasAttribute("data-model")) {
-                select_value = data_token.attr("data-model");
-            }
-            if (data_token[0].hasAttribute("data-currency-id")) {
-                currency_id = data_token.attr("data-currency-id");
-            }
+        if(isDefined(currencyDetails)){
+            currency_id = select_value;
+            select_value = currencyDetails.n;
+            select_symbol = currencyDetails.s
         }
 
         // exchanges
@@ -155,7 +200,10 @@ function handle_add_buttons(){
 
             // select options with reference market if any
             $(editable_selector).each(function () {
-                if ($(this).siblings('.select2').length === 0 && !$(this).parent().hasClass('default')){
+                if (
+                    $(this).siblings('.select2').length === 0
+                    && !$(this).parent().hasClass('default')
+                ){
                     $(this).children("option").each(function () {
                         const option = $(this);
                         const symbols = option.attr("value").split("/");
@@ -181,11 +229,14 @@ function handle_add_buttons(){
 
             // add select2 selector
             $(editable_selector).each(function () {
-                if ($(this).siblings('.select2').length === 0 && !$(this).parent().hasClass('default')){
+                if (
+                    $(this).siblings('.select2').length === 0
+                    && !$(this).parent().hasClass('default')
+                ) {
                     $(this).select2({
                         width: 'resolve', // need to override the changed default
                         tags: true,
-                        placeholder: placeholder
+                        placeholder: placeholder,
                     });
                 }
             });
@@ -231,9 +282,14 @@ function handle_special_values(currentElem){
 }
 
 function register_edit_events(){
-    $('.config-element').each(function () {
-        add_event_if_not_already_added($(this), 'save', card_edit_handler);
-        add_event_if_not_already_added($(this), 'change', card_edit_handler);
+    $('.config-element').each(function (){
+        const element = $(this);
+        if(typeof element.data("label-for") === "undefined"){
+            add_event_if_not_already_added(element, 'save', card_edit_handler);
+            add_event_if_not_already_added(element, 'change', card_edit_handler);
+        }else{
+            registerHandleEditableRenameIfNotAlready(element, ['save', 'change'], handleEditableRenameIfNotAlready)
+        }
     });
     register_exchanges_checks(false);
 }
@@ -329,17 +385,25 @@ function _save_config(element, restart_after_save) {
     // take all tabs into account
     get_tabs_config().each(function(){
         $(this).find("."+config_element_class).each(function(){
-            const config_type = $(this).attr(config_type_attr);
+            const configElement = $(this)
+            if(configElement.parent().parent().hasClass(hidden_class)
+               || typeof configElement.attr("data-label-for") !== "undefined"){
+                // do not add hidden elements (add templates)
+                // do not add element labels
+                return
+            }
+            const config_type = configElement.attr(config_type_attr);
             if(config_type !== evaluator_list_config_type) {
 
                 if (!(config_type in updated_config)) {
                     updated_config[config_type] = {};
                 }
 
-                const new_value = parse_new_value($(this));
-                const config_key = get_config_key($(this));
+                const new_value = parse_new_value(configElement);
+                const config_key = get_config_key(configElement);
 
-                if (get_config_value_changed($(this), new_value, config_key)) {
+                if (get_config_value_changed(configElement, new_value, config_key)
+                    && !config_key.endsWith("_Empty")) {
                     updated_config[config_type][config_key] = new_value;
                 }
             }
@@ -391,7 +455,8 @@ function get_config_value_changed(element, new_value, config_key) {
         });
         new_value_str = "[" + str_array.join(", ") + "]";
     }
-    return get_value_changed(new_value_str, element.attr(config_value_attr).trim(), config_key);
+    return get_value_changed(new_value_str, element.attr(config_value_attr).trim(), config_key)
+        || element.data("changed") === true;
 }
 
 function get_value_changed(new_val, dom_conf_val, config_key){
@@ -738,6 +803,7 @@ function check_account(exchangeCard, source, newValue){
         const apiKey = source.attr("id") === "exchange_api-key" ? newValue : exchangeCard.find("#exchange_api-key").editable('getValue', true).trim();
         const apiSecret = source.attr("id") === "exchange_api-secret" ? newValue : exchangeCard.find("#exchange_api-secret").editable('getValue', true).trim();
         const apiPassword = source.attr("id") === "exchange_api-password" ? newValue : exchangeCard.find("#exchange_api-password").editable('getValue', true).trim();
+        const sandboxed = exchangeCard.find(`#exchange_${exchange}_sandboxed`).is(':checked');
         $.post({
             url: $("#exchange-container").attr(update_url_attr),
             data: JSON.stringify({
@@ -746,6 +812,7 @@ function check_account(exchangeCard, source, newValue){
                     "apiKey": apiKey,
                     "apiSecret": apiSecret,
                     "apiPassword": apiPassword,
+                    "sandboxed": sandboxed,
                 }
             }),
             contentType: 'application/json',
@@ -774,6 +841,7 @@ function check_accounts(exchangeCards){
                 apiKey: apiKey,
                 apiSecret: apiSecret,
                 apiPassword: apiPassword,
+                sandboxed: exchangeCard.find(`#exchange_${exchange}_sandboxed`).is(':checked')
             };
         }
     })
@@ -798,7 +866,8 @@ function check_accounts(exchangeCards){
 
 function exchange_account_check(e, params){
     const element = $(e.target);
-    check_account(element.parents("div[data-role=exchange]"), element, params.newValue);
+    check_account(element.parents("div[data-role=exchange]"), element,
+        typeof params === "undefined" ? null : params.newValue);
 }
 
 function register_exchanges_checks(check_existing_accounts){
@@ -809,6 +878,10 @@ function register_exchanges_checks(check_existing_accounts){
         if(inputs.length){
             add_event_if_not_already_added(inputs, 'save', exchange_account_check);
         }
+        const bools = card.find("input[data-type=bool]");
+        if(bools.length){
+            add_event_if_not_already_added(bools, 'change', exchange_account_check);
+        }
         cards.push(card);
     });
     if(check_existing_accounts){
@@ -816,8 +889,40 @@ function register_exchanges_checks(check_existing_accounts){
     }
 }
 
+function fetch_currencies(){
+    const getCurrencyOption = (addCurrencySelect, details) => {
+        return new Option(`${details.n} - ${details.s}`, details.i, false, false);
+    }
+    if(!$("#AddCurrencySelect").length){
+        return
+    }
+    $.get({
+        url: $("#AddCurrencySelect").data("fetch-url"),
+        dataType: "json",
+        success: function (data) {
+            const addCurrencySelect = $("#AddCurrencySelect");
+            const options = [];
+            data.forEach((element) => {
+                if(!currencyDetailsById.hasOwnProperty(element.i)){
+                    currencyDetailsById[element.i] = element
+                }
+                options.push(getCurrencyOption(addCurrencySelect, element))
+            });
+            addCurrencySelect.append(...options);
+            // add selectpicker class at the last moment to avoid refreshing any existing one (slow)
+            addCurrencySelect.addClass("selectpicker")
+            addCurrencySelect.selectpicker('render');
+            // paginatedSelect2(addCurrencySelect, options, pageSize)
+        },
+        error: function (result, status) {
+            window.console && console.error(`Impossible to get currency list: ${result.responseText} (${status})`);
+        }
+    });
+}
+
 let validated_updated_global_config = {};
 let deleted_global_config_elements = [];
+let currencyDetailsById = {}
 
 const traderSimulatorCheckbox = $("#trader-simulator_enabled");
 const traderCheckbox = $("#trader_enabled");
@@ -826,6 +931,8 @@ const tradingReferenceMarket = $("#trading_reference-market");
 $(document).ready(function() {
     handle_nested_sidenav();
     select_first_tab();
+
+    fetch_currencies();
 
     setup_editable();
     handle_editable();
@@ -850,4 +957,6 @@ $(document).ready(function() {
     check_evaluator_configuration();
 
     register_exchanges_checks(true);
+
+    startTutorialIfNecessary("profile");
 });

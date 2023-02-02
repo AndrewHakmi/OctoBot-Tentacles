@@ -50,6 +50,28 @@
         Using a websocket tentacle for this exchange would handle as many pairs and time frames as wanted.
     </div>
     {% endif %}
+    {% if followed_strategy_url %}
+    <div class="alert alert-light" role="alert">
+        <h4>
+            Subscribed to OctoBot trading signals
+            {% if is_community_feed_connected %}
+            <span class="badge badge-success">Connected</span>
+            {% else %}
+            <span class="badge badge-danger">Disconnected</span>
+            {% endif %}
+        </h4>
+        <div>
+            {% if last_signal_time %}
+            Last received signal: {{convert_timestamp(last_signal_time)}}.
+            {% else %}
+            No signal received yet.
+            {% endif %}
+        </div>
+        <div>
+            Following <a target="_blank" rel="noopener" href="{{ followed_strategy_url }}">{{ followed_strategy_url }}</a>.
+        </div>
+    </div>
+    {% endif %}
     {% if pairs_with_status %}
     <div class="card">
         <div class="card-header"><h2>Market status</h2></div>
@@ -133,7 +155,7 @@
             <h2>Open orders
                 <button type="button" class="btn btn-outline-danger waves-effect float-right" id="cancel_all_orders" update-url="{{ url_for('api.orders', action='cancel_orders') }}"
                         {{ "disabled" if not(real_open_orders or simulated_open_orders) }}>
-                    <i id="cancel_all_icon" class="fas fa-ban"></i> Cancel all
+                <i id="cancel_all_icon" class="fas fa-ban"></i> <span class="d-none d-md-inline-block">Cancel all</span>
                 </button>
             </h2>
         </div>

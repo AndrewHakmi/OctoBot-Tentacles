@@ -29,6 +29,7 @@ import octobot_trading.enums as trading_enums
 import octobot_trading.constants as trading_constants
 import octobot_trading.errors as trading_errors
 import octobot_trading.personal_data as trading_personal_data
+import octobot_trading.modes.script_keywords as script_keywords
 import tentacles.Evaluator.Strategies as Strategies
 
 
@@ -43,7 +44,10 @@ class DipAnalyserTradingMode(trading_modes.AbstractTradingMode):
         Called right before starting the tentacle, should define all the tentacle's user inputs unless
         those are defined somewhere else.
         """
-        self.should_emit_trading_signals_user_input(inputs)
+        trading_modes.should_emit_trading_signals_user_input(self, inputs)
+
+        trading_modes.user_select_order_amount(self, inputs, include_sell=False)
+
         self.sell_orders_per_buy = self.UI.user_input(
             "sell_orders_count", commons_enums.UserInputTypes.INT, 3, inputs, min_val=1,
             title="Number of sell orders to create after each buy."
@@ -54,34 +58,41 @@ class DipAnalyserTradingMode(trading_modes.AbstractTradingMode):
                   "sold, otherwise a small part will be kept to cover exchange fees."
         )
         self.UI.user_input(
-            DipAnalyserTradingModeConsumer.LIGHT_VOLUME_WEIGHT, commons_enums.UserInputTypes.FLOAT, 1.04, inputs,
+            DipAnalyserTradingModeConsumer.STOP_LOSS_MULTIPLIER, commons_enums.UserInputTypes.FLOAT, 0, inputs,
             min_val=0, max_val=1,
-            title="Price multiplier for the top sell order in a light price weight signal.",
+            title="Stop loss price multiplier: ratio to compute the stop loss price. "
+                  "Example: a 0.7 multiplier on a 2000 USDT buy would create a "
+                  "stop price at 2000*0.7 = 1400 USDT. Leave at 0 to disable stop losses."
         )
         self.UI.user_input(
-            DipAnalyserTradingModeConsumer.MEDIUM_VOLUME_WEIGHT, commons_enums.UserInputTypes.FLOAT, 1.07, inputs,
+            DipAnalyserTradingModeConsumer.LIGHT_VOLUME_WEIGHT, commons_enums.UserInputTypes.FLOAT, 0.4, inputs,
             min_val=0, max_val=1,
-            title="Price multiplier for the top sell order in a medium price weight signal.",
+            title="Volume multiplier for a buy order on a light price weight signal.",
         )
         self.UI.user_input(
-            DipAnalyserTradingModeConsumer.HEAVY_VOLUME_WEIGHT, commons_enums.UserInputTypes.FLOAT, 1.1, inputs,
+            DipAnalyserTradingModeConsumer.MEDIUM_VOLUME_WEIGHT, commons_enums.UserInputTypes.FLOAT, 0.7, inputs,
             min_val=0, max_val=1,
-            title="Price multiplier for the top sell order in a heavy price weight signal.",
+            title="Volume multiplier for a buy order on a medium price weight signal.",
         )
         self.UI.user_input(
-            DipAnalyserTradingModeConsumer.LIGHT_PRICE_WEIGHT, commons_enums.UserInputTypes.FLOAT, 0.5, inputs,
-            min_val=1,
-            title="Volume multiplier for the top sell order in a light volume weight signal.",
+            DipAnalyserTradingModeConsumer.HEAVY_VOLUME_WEIGHT, commons_enums.UserInputTypes.FLOAT, 1, inputs,
+            min_val=0, max_val=1,
+            title="Volume multiplier for a buy order on a heavy price weight signal.",
         )
         self.UI.user_input(
-            DipAnalyserTradingModeConsumer.MEDIUM_PRICE_WEIGHT, commons_enums.UserInputTypes.FLOAT, 0.7, inputs,
+            DipAnalyserTradingModeConsumer.LIGHT_PRICE_WEIGHT, commons_enums.UserInputTypes.FLOAT, 1.04, inputs,
             min_val=1,
-            title="Volume multiplier for the top sell order in a medium volume weight signal.",
+            title="Price multiplier for the top sell order in a light volume weight signal.",
         )
         self.UI.user_input(
-            DipAnalyserTradingModeConsumer.HEAVY_PRICE_WEIGHT, commons_enums.UserInputTypes.FLOAT, 1, inputs,
+            DipAnalyserTradingModeConsumer.MEDIUM_PRICE_WEIGHT, commons_enums.UserInputTypes.FLOAT, 1.07, inputs,
             min_val=1,
-            title="Volume multiplier for the top sell order in a heavy volume weight signal.",
+            title="Price multiplier for the top sell order in a medium volume weight signal.",
+        )
+        self.UI.user_input(
+            DipAnalyserTradingModeConsumer.HEAVY_PRICE_WEIGHT, commons_enums.UserInputTypes.FLOAT, 1.1, inputs,
+            min_val=1,
+            title="Price multiplier for the top sell order in a heavy volume weight signal.",
         )
 
     @classmethod
@@ -127,6 +138,8 @@ class DipAnalyserTradingMode(trading_modes.AbstractTradingMode):
 
 
 class DipAnalyserTradingModeConsumer(trading_modes.AbstractTradingModeConsumer):
+    STOP_LOSS_MULTIPLIER = "stop_loss_multiplier"
+    STOP_LOSS_PRICE_MULTIPLIER = decimal.Decimal(0)
     LIMIT_PRICE_MULTIPLIER = decimal.Decimal("0.995")
     SOFT_MAX_CURRENCY_RATIO = decimal.Decimal("0.33")
     # consider a high ratio not to take too much risk and not to prevent order creation either
@@ -163,6 +176,8 @@ class DipAnalyserTradingModeConsumer(trading_modes.AbstractTradingModeConsumer):
         Called at constructor and after the associated trading mode's reload_config.
         Implement if necessary
         """
+        self.STOP_LOSS_PRICE_MULTIPLIER = \
+            decimal.Decimal(f"{self.trading_mode.trading_config.get(self.STOP_LOSS_MULTIPLIER, 0)}")
         self.PRICE_WEIGH_TO_PRICE_PERCENT = {}
         self.PRICE_WEIGH_TO_PRICE_PERCENT[1] = \
             decimal.Decimal(f"{self.trading_mode.trading_config[self.LIGHT_PRICE_WEIGHT]}")
@@ -207,7 +222,8 @@ class DipAnalyserTradingModeConsumer(trading_modes.AbstractTradingModeConsumer):
             base = symbol_util.parse_symbol(symbol).base
             created_orders = []
             orders_should_have_been_created = False
-            quantity = await self._get_buy_quantity_from_weight(volume_weight, max_buy_size, base)
+            ctx = script_keywords.get_base_context(self.trading_mode, symbol)
+            quantity = await self._get_buy_quantity_from_weight(ctx, volume_weight, max_buy_size, base)
             limit_price = trading_personal_data.decimal_adapt_price(symbol_market, self.get_limit_price(price))
             for order_quantity, order_price in trading_personal_data.decimal_check_and_adapt_order_details_if_necessary(
                     quantity,
@@ -264,6 +280,8 @@ class DipAnalyserTradingModeConsumer(trading_modes.AbstractTradingModeConsumer):
                 )
                 created_order = await self.trading_mode.create_order(current_order)
                 created_orders.append(created_order)
+                if stop_order := await self._create_stop_loss_if_enabled(created_order, sell_base, symbol_market):
+                    created_orders.append(stop_order)
             if created_orders:
                 return created_orders
             if orders_should_have_been_created:
@@ -280,17 +298,50 @@ class DipAnalyserTradingModeConsumer(trading_modes.AbstractTradingModeConsumer):
             self.logger.exception(e, False)
             return []
 
+    async def _create_stop_loss_if_enabled(self, sell_order, sell_base, symbol_market):
+        if not self.STOP_LOSS_PRICE_MULTIPLIER or not sell_order.is_open():
+            return None
+        stop_price = sell_base * self.STOP_LOSS_PRICE_MULTIPLIER
+        oco_group = self.exchange_manager.exchange_personal_data.orders_manager \
+            .create_group(trading_personal_data.OneCancelsTheOtherOrderGroup)
+        sell_order.add_to_order_group(oco_group)
+        current_order = trading_personal_data.create_order_instance(
+            trader=self.exchange_manager.trader,
+            order_type=trading_enums.TraderOrderType.STOP_LOSS,
+            symbol=sell_order.symbol,
+            current_price=trading_personal_data.adapt_price(symbol_market, stop_price),
+            quantity=sell_order.origin_quantity,
+            price=stop_price,
+            side=trading_enums.TradeOrderSide.SELL,
+            reduce_only=True,
+            group=oco_group,
+        )
+        stop_order = await self.trading_mode.create_order(current_order)
+        self.logger.debug(f"Grouping orders: {sell_order} and {stop_order}")
+        return stop_order
+
     def _register_buy_order(self, order_id, price_weight):
         self.sell_targets_by_order_id[order_id] = price_weight
 
     def unregister_buy_order(self, order_id):
         self.sell_targets_by_order_id.pop(order_id, None)
 
-    async def _get_buy_quantity_from_weight(self, volume_weight, market_quantity, currency):
+    async def _get_buy_quantity_from_weight(self, ctx, volume_weight, market_quantity, currency):
         weighted_volume = self.VOLUME_WEIGH_TO_VOLUME_PERCENT[volume_weight]
         # high risk is making larger orders, low risk is making smaller ones
         risk_multiplier = 1 + ((self.exchange_manager.trader.risk - decimal.Decimal("0.5")) * self.RISK_VOLUME_MULTIPLIER)
         weighted_volume = min(weighted_volume * risk_multiplier, trading_constants.ONE)
+        # check configured quantity
+        if user_amount := trading_modes.get_user_selected_order_amount(self.trading_mode,
+                                                                       trading_enums.TradeOrderSide.BUY):
+            return await script_keywords.get_amount_from_input_amount(
+                context=ctx,
+                input_amount=user_amount,
+                side=trading_enums.TradeOrderSide.BUY.value,
+                reduce_only=False,
+                is_stop_order=False,
+                use_total_holding=False,
+            ) * weighted_volume
         traded_assets_count = self.get_number_of_traded_assets()
         if traded_assets_count == 1:
             return market_quantity * self.DEFAULT_FULL_VOLUME * weighted_volume

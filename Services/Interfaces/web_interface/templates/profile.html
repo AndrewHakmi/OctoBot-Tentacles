@@ -5,7 +5,7 @@
 {% import 'components/config/trader_card.html' as m_config_trader_card %}
 {% import 'components/config/evaluator_card.html' as m_config_evaluator_card %}
 {% import 'components/config/tentacle_card.html' as m_config_tentacle_card %}
-{% import 'components/config/profile_tab.html' as m_config_profile_tab %}
+{% import 'components/config/profiles.html' as m_config_profile_tab %}
 {% import 'macros/tentacles.html' as m_tentacles %}
 {% import 'macros/flash_messages.html' as m_flash_messages %}
 
@@ -24,22 +24,15 @@
 <div class="row mt-md-4 mt-2">
     <nav class="mt-md-4 mt-2 col-md-3 col-lg-2 col-1 d-block sidebar shadow">
         <div class="sidebar-sticky mt-0 pt-0">
-            <div class="px-1 px-md-4">
-                <a data-profile-id="{{current_profile.profile_id}}" data-role="current-profile-selector">
-                    <h5>
-                        <span class="d-none d-md-block">Current profile</span>
-                        <span class="font-weight-bold" data-role="profile-name" data-profile-id="{{current_profile.profile_id}}">{{current_profile.name}}</span>
-                    </h5>
-                </a>
-            </div>
             <div class="nav flex-column pt-0 mt-0 mt-md-4" id="v-tab" role="tablist"
                  aria-orientation="vertical">
                 <span>
                     <a class="nav-link pl-2 pl-sm-3 waves-effect d-flex justify-content-between dropdown-toggle collapsed"
                        data-toggle="collapse"
+                       id="edit-profiles-button"
                        href="#profilesSubmenu" role="tab" aria-expanded="false">
                         <span class="d-flex">
-                            <i class="fas fa-users"></i><span class="d-none d-md-block pl-3">Profiles</span>
+                            <i class="fas fa-users"></i><span class="d-none d-md-block pl-3">Edit profiles</span>
                         </span>
                     </a>
                     <ul class="collapse nav" id="profilesSubmenu">
@@ -105,14 +98,30 @@
     <main role="main" class="col-md-9 col-lg-10 col-11 ml-auto px-4">
         {{ m_flash_messages.flash_messages() }}
         <div class="tab-content" id="super-container">
+            <div class="card bg-dark text-light card-header ">
+                <a class="d-inline-block" data-profile-id="{{current_profile.profile_id}}" data-role="current-profile-selector">
+                    <h2 class="">
+                        <span class="d-none d-md-inline-block">Current profile</span>
+                        <span class="font-weight-bold" data-role="profile-name" data-profile-id="{{current_profile.profile_id}}">{{current_profile.name}}</span>
+                    </h2>
+                </a>
+                <a class="btn btn-sm rounded-circle btn-primary waves-effect mx-1 mx-md-4 align-top"
+                   href="{{url_for('profiles_selector')}}" data-toggle="tooltip"
+                   title="Select another profile"
+                   id="profile-selector-link"
+                >
+                    <i class="fas fa-exchange-alt" aria-hidden="true"></i>
+                </a>
+            </div>
             {% for profile_id, profile in profiles.items() %}
             {{m_config_profile_tab.profile_tab(current_profile, profile, profiles_tentacles_details[profile_id], strategy_config, evaluator_config,
                                                get_profile_traded_pairs_by_currency, get_profile_exchanges, get_enabled_trader, get_filtered_list, OCTOBOT_DOCS_URL)}}
             {% endfor %}
-
             <div class="tab-pane fade config-root show" id="panelStrategies" role="tabpanel"
                  aria-labelledby="panelStrategies-tab">
-                {% if profiles_tentacles_details[current_profile.profile_id]["version"] != CURRENT_BOT_VERSION %}
+
+                {% if profiles_tentacles_details[current_profile.profile_id]["version"] != CURRENT_BOT_VERSION
+                    and not profiles_tentacles_details[current_profile.profile_id]["imported"] %}
                     <div class="alert alert-warning" role="alert">
                         <h4>Profile version warning</h4>
                         <p>
@@ -123,7 +132,6 @@
                         </p>
                     </div>
                 {% endif %}
-                {{ m_tentacles.missing_tentacles_warning(missing_tentacles) }}
 
                 {% set trading_modes = strategy_config["trading-modes"].items() %}
                 {% set strategies = strategy_config["strategies"].items() %}
@@ -133,9 +141,8 @@
                         <div class="card-header">
                             <h2>
                                 Trading modes
-                                <a class="float-right blue-text" target="_blank" rel="noopener"
-                                   href="{{OCTOBOT_WEBSITE_URL}}/guides/#trading_modes">
-                                    <i class="fa fa-question"></i>
+                                <a class="float-right blue-text" target="_blank" data-intro="profile" >
+                                    <i class="fa-solid fa-question"></i>
                                 </a>
                             </h2>
                         </div>
@@ -176,6 +183,8 @@
                                 advanced configuration interface</a></p>
                         </div>
                     </div>
+                    <br>
+                    {{ m_tentacles.missing_tentacles_warning(missing_tentacles) }}
                 {% else %}
                     <div class="card">
                         <div class="card-header">
@@ -184,7 +193,7 @@
                                 <span href="" class="badge badge-dark waves-effect align-top" data-role="current-profile-selector">read only</span>
                                 <a class="float-right blue-text" target="_blank" rel="noopener"
                                    href="{{OCTOBOT_WEBSITE_URL}}/guides/#trading_modes">
-                                    <i class="fa fa-question"></i>
+                                    <i class="fa-solid fa-question"></i>
                                 </a>
                             </h2>
                         </div>
@@ -202,7 +211,7 @@
 
                                         <div class="card-body pb-0">
                                             <div class="row">
-                                                {{ m_tentacles.tentacle_horizontal_description_row_content(info, tentacle_type=="strategy") }}
+                                                {{ m_tentacles.tentacle_horizontal_description_row_content(info, tentacle_type=="strategy", True) }}
                                                 <div class="col">
                                                     <div class="alert alert-info" role="alert">
                                                         <h4 class="alert-heading">Trading modes</h4>
@@ -228,7 +237,7 @@
 
                                         <div class="card-body pb-0">
                                             <div class="row">
-                                                {{ m_tentacles.tentacle_horizontal_description_row_content(info, tentacle_type=="strategy") }}
+                                                {{ m_tentacles.tentacle_horizontal_description_row_content(info, tentacle_type=="strategy", True) }}
                                                 <div class="col">
                                                     <div class="alert alert-info" role="alert">
                                                         <h4 class="alert-heading">Strategies</h4>
@@ -261,34 +270,25 @@
                                 <div class="container-fluid row col-12">
                                     <div class="col-md-6">
                                         <label for="AddCurrencySelect">Add a cryptocurrency to trade:</label>
-                                        <select id="AddCurrencySelect" class="selectpicker" data-live-search="true"
-                                                reference_market="{{ config_reference_market }}">
-                                            {% for currency in full_symbol_list %}
-                                            {% if currency not in config_symbols %}
-                                            <option data-tokens="{{ full_symbol_list[currency]['symbol'] }} - {{ currency }}"
-                                                    data-currency-id="{{ full_symbol_list[currency]['id'] }}"
-                                                    symbol="{{ full_symbol_list[currency]['symbol'] }}"
-                                                    data-model="{{ currency }}">{{ full_symbol_list[currency]['symbol']}} - {{
-                                                currency }}
-                                            </option>
-                                            {% endif %}
-                                            {% endfor %}
+                                        <select id="AddCurrencySelect" data-live-search="true"
+                                                reference_market="{{ config_reference_market }}" data-fetch-url="{{ url_for('api.currency_list') }}">
+
                                         </select>
                                         <button type="button" id="AddCurrency"
                                                 class="btn btn-primary add-btn px-3 waves-effect"><i class="fa fa-plus pr-2"
                                                                                                      aria-hidden="true"></i> Add
                                         </button>
                                     </div>
-                                    <div class="col-md-6">
+                                    <div class="d-none d-md-inline-block col-md-6">
                                         <div class="d-flex justify-content-end">
                                             <button class="btn btn-outline-info btn-lg waves-effect" id="export-currencies-button"
                                                     update-url="{{ url_for('api.get_config_currency')}}">
-                                                <i class="fa fa-cloud-download-alt"></i> Export
+                                                <i class="fa fa-cloud-download-alt"></i> <span class="d-none d-md-inline-block">Export</span>
                                             </button>
                                             <input class="d-none" id="import-currencies-input" type="file" name="file" accept=".json"/>
                                             <button class="btn btn-outline-info btn-lg waves-effect" id="import-currencies-button"
                                                     update-url="{{ url_for('api.set_config_currency') }}">
-                                                <i class="fa fa-cloud-upload-alt"></i> Import
+                                                <i class="fa fa-cloud-upload-alt"></i> <span class="d-none d-md-inline-block">Import</span>
                                             </button>
                                         </div>
 
@@ -307,7 +307,8 @@
                         <div class="card-deck config-container" update-url="{{ url_for('config') }}">
                             {% for crypto_currency in config_symbols %}
                             {{ m_config_currency_card.config_currency_card(config_symbols, crypto_currency,
-                            filter_currency_pairs(crypto_currency, symbol_list, full_symbol_list, config_symbols), full_symbol_list,
+                            filter_currency_pairs(crypto_currency, symbol_list, full_symbol_list, config_symbols),
+                            full_symbol_list, get_currency_id,
                             symbol=config_symbols[crypto_currency]['pairs'][0].split('/')[0].lower() if
                             config_symbols[crypto_currency]['pairs'])}}
                             {% endfor %}
@@ -316,6 +317,7 @@
                     <div class="card-footer">
                         <i class="fab fa-octopus-deploy"></i> Pro tip: a pair you want to trade is not in the
                         selector and your exchange is supporting it ? Just type it in and press enter.
+                        Data provided by <a href="https://www.coingecko.com/" target="_blank">CoinGecko</a>.
                     </div>
                 </div>
             </div>
@@ -326,7 +328,7 @@
                         <h2>Exchanges
                             <a class="float-right blue-text" target="_blank" rel="noopener"
                                href="{{OCTOBOT_WEBSITE_URL}}/guides/#exchanges">
-                                <i class="fa fa-question"></i>
+                                <i class="fa-solid fa-question"></i>
                             </a>
                         </h2>
                     </div>
@@ -340,7 +342,7 @@
                             is_supporting_future_trading,
                             enabled=config_exchanges[exchange].get('enabled', True),
                             sandboxed=config_exchanges[exchange].get('sandboxed', False),
-                            selected_exchange_type=config_exchanges[exchange].get('exchange-type', 'spot'),
+                            selected_exchange_type=config_exchanges[exchange].get('exchange-type', exchanges_details[exchange]['default_exchange_type']),
                             full_config=False,
                             exchange_docs_url=EXCHANGES_DOCS_URL,
                             donation_url=OCTOBOT_DONATION_URL) }}
@@ -355,7 +357,7 @@
                         <h2>
                             Trading
                             <span class="float-right badge {{ 'badge-dark' if real_trader_activated else 'badge-primary' }} waves-effect">
-                        {{ 'Real trader currently activated' if real_trader_activated else 'Trader simulator currently activated' }}
+                        {{ 'Real trader' if real_trader_activated else 'Simulator' }}
                     </span>
                         </h2>
                     </div>
@@ -398,6 +400,7 @@
         </div>
     </main>
 </div>
+<span class="d-none" data-display-intro="{{display_intro}}"></span>
 
 <!-- Modals -->
 {% for trading_mode_name, info in strategy_config["trading-modes"].items() %}
@@ -421,6 +424,7 @@
         crypto_currency=config_default_value,
         symbol_list=symbol_list,
         full_symbol_list=full_symbol_list,
+        get_currency_id=get_currency_id,
         add_class=added_class,
         no_select=True,
         additional_classes="default",

@@ -29,6 +29,7 @@ def community():
     logged_in_email = None
     use_preview = not authenticator.can_authenticate()
     try:
+        models.wait_for_login_if_processing()
         logged_in_email = authenticator.get_logged_in_email()
     except (authentication.AuthenticationRequired, authentication.UnavailableError):
         pass
@@ -50,7 +51,8 @@ def community():
         all_user_bots=models.get_all_user_bots(),
         selected_user_bot=models.get_selected_user_bot(),
         default_tentacles_package_image=default_image,
-        can_logout=not authentication.Authenticator.instance().must_be_authenticated_through_authenticator()
+        can_logout=models.can_logout(),
+        can_select_bot=models.can_select_bot(),
     )
 
 
